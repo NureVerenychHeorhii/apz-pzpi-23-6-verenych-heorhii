@@ -1,0 +1,35 @@
+Приклади взаємодії з API системи Telegram.
+
+1. HTTP-запит до Telegram Bot API для надсилання повідомлення
+------------------------------------------------------------------------
+POST https://api.telegram.org/bot<TOKEN>/sendMessage
+Content-Type: application/json
+
+{
+    "chat_id": 123456789,
+    "text": "Привіт! Це повідомлення надіслав бот.",
+    "parse_mode": "HTML"
+}
+
+Відповідь сервера (скорочено):
+{
+    "ok": true,
+    "result": {
+        "message_id": 101,
+        "chat": { "id": 123456789, "type": "private" },
+        "date": 1718900000,
+        "text": "Привіт! Це повідомлення надіслав бот."
+    }
+}
+
+
+2. Фрагмент опису API мовою TL (Type Language, спрощено)
+------------------------------------------------------------------------
+// Опис типу повідомлення
+message id:int peer_id:Peer date:int message:string = Message;
+
+// Опис методу надсилання повідомлення
+messages.sendMessage peer:InputPeer message:string random_id:long = Updates;
+
+TL описує типи об'єктів і методи повного MTProto API. Bot API є спрощеним
+рівнем поверх MTProto та використовує звичайні HTTPS-запити у форматі JSON.
