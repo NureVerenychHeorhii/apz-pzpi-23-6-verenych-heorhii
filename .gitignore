@@ -16,3 +16,8 @@ build/
 # Microsoft Office temp / lock files
 ~$*
 *.tmp
+
+# Generated/binary deliverables (kept locally; repo holds only TXT report + code)
+*.pptx
+*.docx
+*.pdf
