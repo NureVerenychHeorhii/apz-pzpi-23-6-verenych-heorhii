@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/nav_dashboard" android:title="Головна"  android:icon="@android:drawable/ic_menu_today"/>
+    <item android:id="@+id/nav_events"    android:title="Події"    android:icon="@android:drawable/ic_menu_agenda"/>
+    <item android:id="@+id/nav_stats"     android:title="Статистика" android:icon="@android:drawable/ic_menu_sort_by_size"/>
+    <item android:id="@+id/nav_medical"   android:title="Здоров'я" android:icon="@android:drawable/ic_menu_info_details"/>
+    <item android:id="@+id/nav_team"      android:title="Команда"  android:icon="@android:drawable/ic_menu_myplaces"/>
+    <item android:id="@+id/nav_profile"   android:title="Профіль"  android:icon="@android:drawable/ic_menu_my_calendar"/>
+</menu>

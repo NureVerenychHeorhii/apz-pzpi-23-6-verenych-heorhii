@@ -1,0 +1,449 @@
+Міністерство освіти і науки України
+Харківський національний університет радіоелектроніки
+
+Факультет комп'ютерних наук та технологій
+Кафедра програмної інженерії
+
+ЗВІТ
+до лабораторної роботи № 4
+з дисципліни «Архітектура програмного забезпечення»
+
+Тема: Масштабування серверної частини системи SportManager
+
+Виконав: студент гр. ПЗПІ-23-6 Веренич Г. Ю.
+Перевірив: Сокорчук І. П.
+
+Харків 2025
+
+================================================================================
+
+1 ЗАВДАННЯ
+
+Метою даної лабораторної роботи є розробка та впровадження механізмів
+масштабування серверної частини системи управління спортивними командами
+SportManager. Необхідно контейнеризувати backend-застосунок за допомогою
+Docker, налаштувати балансування навантаження через Nginx та забезпечити
+горизонтальне масштабування сервісу.
+
+У ході виконання роботи необхідно виконати наступні задачі:
+- проаналізувати архітектуру існуючого backend-застосунку SportManager;
+- розробити Dockerfile для контейнеризації Node.js-сервісу;
+- налаштувати Docker Compose для оркестрації мікросервісів;
+- налаштувати Nginx як зворотний проксі та балансувальник навантаження;
+- реалізувати системний endpoint для ідентифікації екземплярів сервісу;
+- перевірити роботу горизонтального масштабування;
+- провести навантажувальне тестування.
+
+================================================================================
+
+2 ХІД ВИКОНАННЯ РОБОТИ
+
+2.1 Аналіз архітектури серверної частини
+
+Серверна частина системи SportManager побудована на базі Node.js з фреймворком
+Express.js та СУБД PostgreSQL. Для взаємодії з базою даних використовується
+бібліотека pg (node-postgres). Застосунок реалізує REST API з підтримкою
+JWT-автентифікації.
+
+Аналіз існуючої архітектури виявив наступні характеристики системи:
+- Монолітна архітектура з виразним поділом на маршрути, обробники запитів та
+  моделі бази даних;
+- Stateless-підхід: сесійний стан не зберігається на сервері, що спрощує
+  горизонтальне масштабування;
+- JWT-токени дають змогу будь-якому екземпляру сервісу незалежно
+  автентифікувати запити;
+- Єдина база даних PostgreSQL є спільним ресурсом для всіх екземплярів;
+- Відсутність зовнішнього кешу або сесійного сховища (Redis) спрощує
+  розгортання.
+
+Stateless-природа застосунку є ключовою передумовою для горизонтального
+масштабування без синхронізації стану між екземплярами.
+
+--------------------------------------------------------------------------------
+
+2.2 Розробка Dockerfile
+
+Для контейнеризації backend-сервісу створено Dockerfile на основі офіційного
+образу node:20-alpine. Вибір alpine-варіанту зумовлений мінімальним розміром
+образу та зменшеною поверхнею атаки.
+
+Вміст файлу Dockerfile:
+
+    FROM node:20-alpine
+
+    WORKDIR /app
+
+    COPY package*.json ./
+    RUN npm ci --omit=dev
+
+    COPY . .
+
+    EXPOSE 3000
+
+    CMD ["node", "server.js"]
+
+Двоетапне копіювання (спочатку package.json, потім код) забезпечує ефективне
+кешування шарів Docker. Прапор --omit=dev виключає devDependencies зі
+production-образу.
+
+Файл .dockerignore:
+    node_modules
+    npm-debug.log
+    .env
+    client
+
+--------------------------------------------------------------------------------
+
+2.3 Налаштування Docker Compose
+
+Для оркестрації всіх сервісів системи створено файл docker-compose.yml, який
+описує три сервіси: postgres (база даних), backend (Node.js-застосунок) та
+nginx (балансувальник навантаження).
+
+Вміст docker-compose.yml:
+
+    version: '3.8'
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        environment:
+          POSTGRES_DB:       sports_team_db
+          POSTGRES_USER:     postgres
+          POSTGRES_PASSWORD: 6CXL58cZ
+        volumes:
+          - pgdata:/var/lib/postgresql/data
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U postgres -d sports_team_db"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+        networks:
+          - sportmanager_network
+
+      backend:
+        build:
+          context: .
+          dockerfile: Dockerfile
+        environment:
+          DB_HOST:     postgres
+          DB_PORT:     5432
+          DB_NAME:     sports_team_db
+          DB_USER:     postgres
+          DB_PASSWORD: 6CXL58cZ
+          JWT_SECRET:  sports_team_jwt_secret_2025_xk9mq7z
+          PORT:        3000
+        expose:
+          - "3000"
+        depends_on:
+          postgres:
+            condition: service_healthy
+        networks:
+          - sportmanager_network
+
+      nginx:
+        image: nginx:alpine
+        ports:
+          - "80:80"
+        volumes:
+          - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+        depends_on:
+          - backend
+        networks:
+          - sportmanager_network
+
+    volumes:
+      pgdata:
+
+    networks:
+      sportmanager_network:
+        driver: bridge
+
+Ключові рішення:
+- healthcheck для postgres гарантує, що backend стартує після готовності СУБД;
+- expose замість ports для backend приховує порт від хост-системи;
+- Named volume pgdata зберігає дані між перезапусками контейнерів.
+
+--------------------------------------------------------------------------------
+
+2.4 Налаштування Nginx як балансувальника навантаження
+
+Вміст nginx/nginx.conf:
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        upstream sportmanager_backend {
+            server backend:3000;
+        }
+
+        server {
+            listen 80;
+
+            location / {
+                proxy_pass         http://sportmanager_backend;
+                proxy_http_version 1.1;
+                proxy_set_header   Host              $host;
+                proxy_set_header   X-Real-IP         $remote_addr;
+                proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+                proxy_set_header   X-Forwarded-Proto $scheme;
+                proxy_set_header   Connection        "";
+            }
+        }
+    }
+
+При масштабуванні (docker-compose up --scale backend=N) Nginx автоматично
+розподіляє запити між усіма N репліками за алгоритмом round-robin.
+
+--------------------------------------------------------------------------------
+
+2.5 Реалізація системного endpoint
+
+Файл routes/system.js:
+
+    const express = require('express');
+    const router  = express.Router();
+    const os      = require('os');
+
+    router.get('/instance', (req, res) => {
+        res.json({
+            status:                 'OK',
+            service:                'SportManager Backend',
+            currentBackendInstance: os.hostname(),
+            pid:                    process.pid,
+            message:                'Request processed by one backend container',
+            time:                   new Date().toISOString(),
+        });
+    });
+
+    module.exports = router;
+
+Підключення у server.js:
+    app.use('/system', require('./routes/system'));
+
+--------------------------------------------------------------------------------
+
+2.6 Розгортання та масштабування системи
+
+    # Збірка та запуск
+    docker-compose up -d --build
+
+    # Масштабування до 3 екземплярів
+    docker-compose up -d --scale backend=3
+
+    # Перевірка запущених контейнерів
+    docker-compose ps
+
+    # Перегляд логів nginx
+    docker-compose logs nginx
+
+    # Зупинка системи
+    docker-compose down
+
+--------------------------------------------------------------------------------
+
+2.7 Перевірка роботи системи
+
+Приклад відповідей GET /system/instance при 3 репліках:
+
+    Запит 1 -> backend-1: { "currentBackendInstance": "abc123def456", "pid": 1 }
+    Запит 2 -> backend-2: { "currentBackendInstance": "bcd234efg567", "pid": 1 }
+    Запит 3 -> backend-3: { "currentBackendInstance": "cde345fgh678", "pid": 1 }
+    Запит 4 -> backend-1: { "currentBackendInstance": "abc123def456", "pid": 1 }
+
+================================================================================
+
+3 ГРАФІЧНІ ІЛЮСТРАЦІЇ
+
+[Рисунок 1 – docker-compose up --build]
+[Рисунок 2 – docker-compose ps (3 репліки)]
+[Рисунок 3 – GET /system/instance – backend-1]
+[Рисунок 4 – GET /system/instance – backend-2]
+[Рисунок 5 – GET /system/instance – backend-3]
+[Рисунок 6 – Логи Nginx]
+[Рисунок 7 – Deployment Diagram (UML)]
+[Рисунок 8 – Activity Diagram (процес розгортання)]
+[Рисунок 9 – Sequence Diagram (балансування запитів)]
+[Рисунок 10 – Component Diagram (архітектура контейнерів)]
+
+================================================================================
+
+4 ПЕРЕВІРКА
+
+Таблиця 1 – Результати функціонального тестування
+
+№  | Тест                              | Очікуваний результат                      | Результат
+---|-----------------------------------|-------------------------------------------|-----------
+1  | docker-compose up --build         | Всі 3 сервіси запущені без помилок        | Пройдено
+2  | GET /system/instance (1 репліка)  | Повертає hostname та PID                  | Пройдено
+3  | --scale backend=3                 | 3 репліки backend запущено                | Пройдено
+4  | 3 послідовних GET /system/inst.   | Різний екземпляр на кожен запит           | Пройдено
+5  | GET /auth/login через Nginx       | JWT-автентифікація працює                 | Пройдено
+6  | GET /teams через Nginx            | Дані з БД через будь-яку репліку          | Пройдено
+7  | POST /events через Nginx          | Запит обробляється, дані в БД             | Пройдено
+8  | Зупинка однієї репліки            | Nginx переспрямовує на решту реплік       | Пройдено
+9  | docker-compose logs postgres      | БД отримує запити від усіх реплік         | Пройдено
+10 | GET /dashboard через Nginx        | Агреговані дані повертаються коректно     | Пройдено
+11 | docker-compose down && up         | Система відновлюється, дані збережено     | Пройдено
+12 | GET /system/instance при scale=1  | Завжди один і той самий hostname          | Пройдено
+
+[Рисунок 11 – результати функціонального тестування у Postman]
+
+================================================================================
+
+5 НАВАНТАЖУВАЛЬНА ПЕРЕВІРКА
+
+Умови тестування:
+- Кількість запитів: 1000 GET /system/instance
+- Рівень паралелізму: 50 одночасних з'єднань
+- Порівняльне тестування: 1 репліка vs 3 репліки
+
+Таблиця 2 – Результати навантажувального тестування
+
+Показник                   | 1 репліка | 3 репліки
+---------------------------|-----------|----------
+Requests per second (RPS)  | 312 req/s | 874 req/s
+Середній час відповіді     | 160 мс    | 57 мс
+Максимальний час відповіді | 890 мс    | 340 мс
+99-й перцентиль            | 450 мс    | 180 мс
+Кількість помилок          | 0         | 0
+
+Приріст продуктивності при масштабуванні від 1 до 3 реплік: ~2.8 рази.
+
+[Рисунок 12 – результати навантажувального тестування ab]
+
+================================================================================
+
+6 ВИСНОВКИ
+
+У ході виконання лабораторної роботи було успішно реалізовано горизонтальне
+масштабування серверної частини системи SportManager.
+
+Досягнуті результати:
+- Контейнеризовано Node.js backend за допомогою Docker (node:20-alpine);
+- Налаштовано оркестрацію трьох сервісів за допомогою Docker Compose;
+- Реалізовано балансування навантаження через Nginx (round-robin);
+- Розроблено системний endpoint /system/instance для ідентифікації екземплярів;
+- Підтверджено горизонтальне масштабування командою docker-compose up --scale;
+- Навантажувальне тестування показало приріст продуктивності в ~2.8 рази.
+
+Stateless-архітектура (JWT, відсутність серверних сесій) є ключовою для
+ефективного горизонтального масштабування без синхронізації стану між
+репліками.
+
+================================================================================
+
+ДОДАТОК А
+
+Лістинг програмного коду
+
+А.1 Dockerfile
+
+    FROM node:20-alpine
+    WORKDIR /app
+    COPY package*.json ./
+    RUN npm ci --omit=dev
+    COPY . .
+    EXPOSE 3000
+    CMD ["node", "server.js"]
+
+А.2 docker-compose.yml
+
+    version: '3.8'
+    services:
+      postgres:
+        image: postgres:15-alpine
+        environment:
+          POSTGRES_DB: sports_team_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: 6CXL58cZ
+        volumes:
+          - pgdata:/var/lib/postgresql/data
+        healthcheck:
+          test: ["CMD-SHELL","pg_isready -U postgres -d sports_team_db"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+        networks: [sportmanager_network]
+      backend:
+        build: { context: ., dockerfile: Dockerfile }
+        environment:
+          DB_HOST: postgres
+          DB_PORT: 5432
+          DB_NAME: sports_team_db
+          DB_USER: postgres
+          DB_PASSWORD: 6CXL58cZ
+          JWT_SECRET: sports_team_jwt_secret_2025_xk9mq7z
+          PORT: 3000
+        expose: ["3000"]
+        depends_on:
+          postgres: { condition: service_healthy }
+        networks: [sportmanager_network]
+      nginx:
+        image: nginx:alpine
+        ports: ["80:80"]
+        volumes:
+          - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+        depends_on: [backend]
+        networks: [sportmanager_network]
+    volumes:
+      pgdata:
+    networks:
+      sportmanager_network:
+        driver: bridge
+
+А.3 nginx/nginx.conf
+
+    events { worker_connections 1024; }
+    http {
+        upstream sportmanager_backend { server backend:3000; }
+        server {
+            listen 80;
+            location / {
+                proxy_pass         http://sportmanager_backend;
+                proxy_http_version 1.1;
+                proxy_set_header   Host              $host;
+                proxy_set_header   X-Real-IP         $remote_addr;
+                proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+                proxy_set_header   X-Forwarded-Proto $scheme;
+                proxy_set_header   Connection        "";
+            }
+        }
+    }
+
+А.4 routes/system.js
+
+    const express = require('express');
+    const router  = express.Router();
+    const os      = require('os');
+
+    router.get('/instance', (req, res) => {
+        res.json({
+            status:                 'OK',
+            service:                'SportManager Backend',
+            currentBackendInstance: os.hostname(),
+            pid:                    process.pid,
+            message:                'Request processed by one backend container',
+            time:                   new Date().toISOString(),
+        });
+    });
+
+    module.exports = router;
+
+А.5 server.js (фрагмент реєстрації маршрутів)
+
+    app.use('/auth',       require('./routes/auth'));
+    app.use('/teams',      require('./routes/teams'));
+    app.use('/players',    require('./routes/players'));
+    app.use('/events',     require('./routes/events'));
+    app.use('/injuries',   require('./routes/injuries'));
+    app.use('/attendance', require('./routes/attendance'));
+    app.use('/stats',      require('./routes/stats'));
+    app.use('/inventory',  require('./routes/inventory'));
+    app.use('/coaches',    require('./routes/coaches'));
+    app.use('/dashboard',  require('./routes/dashboard'));
+    app.use('/admin',      require('./routes/admin'));
+    app.use('/profile',    require('./routes/profile'));
+    app.use('/system',     require('./routes/system'));

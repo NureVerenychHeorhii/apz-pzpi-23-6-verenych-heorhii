@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SportManager</string>
+    <string name="email_hint">Email</string>
+    <string name="password_hint">Пароль</string>
+    <string name="login_button">Увійти</string>
+    <string name="logout">Вийти</string>
+    <string name="dashboard">Головна</string>
+    <string name="events">Події</string>
+    <string name="stats">Статистика</string>
+    <string name="medical">Здоров'я</string>
+    <string name="team">Команда</string>
+    <string name="profile">Профіль</string>
+    <string name="loading">Завантаження...</string>
+    <string name="error_loading">Помилка завантаження даних</string>
+    <string name="no_data">Дані відсутні</string>
+</resources>
